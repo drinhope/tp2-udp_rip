@@ -12,10 +12,7 @@ TIMEOUT = 5
 
 # Função para criar e configurar o socket UDP
 def create_sockets(address, port):
-    """
-    Cria e configura um socket UDP vinculado a um endereço e porta específicos.
-    Define um timeout de 5 segundos para operações de leitura.
-    """
+
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)  # Criação do socket UDP
 
     # Definir o tempo limite de 5 segundos para operações de leitura
@@ -27,58 +24,44 @@ def create_sockets(address, port):
 
 # Função para adicionar uma rota à tabela de roteamento
 def ADD(routing_table, IP, weight):
-    """
-    Adiciona uma nova rota à tabela de roteamento.
-    - routing_table: Dicionário que armazena as rotas.
-    - IP: Endereço IP do destino.
-    - weight: Custo associado à rota.
-    """
+    
     routing_table[IP] = weight  # Adiciona ou atualiza a rota com o peso associado
     
 # Função para remover uma rota da tabela de roteamento
 def DEL(routing_table, IP):
-    """
-    Remove uma rota da tabela de roteamento.
-    - routing_table: Dicionário que armazena as rotas.
-    - IP: Endereço IP do destino a ser removido.
-    """
+    
     if IP in routing_table:
         del routing_table[IP]  # Remove a rota do dicionário
     else:
         print(f"Rota para {IP} não encontrada na tabela de roteamento.")
 
-# Função para enviar mensagens de atualização para os vizinhos
+# Função para enviar mensagens de atualização para os vizinhos com Split Horizon
 def SEND_UPDATE_MESSAGE(sock, port, routing_table, address):
-    """
-    Envia mensagens de atualização de rota periodicamente para os vizinhos.
-    - sock: Socket para envio de mensagens.
-    - port: Porta dos vizinhos.
-    - routing_table: Tabela de roteamento atual.
-    - address: Endereço IP do roteador de origem.
-    """
-    for IP, weight in routing_table.items():
-        # Cria a mensagem de atualização
+    for neighbor, weight in routing_table.items():
+        # Filtra rotas aprendidas do vizinho atual
+        filtered_table = {
+            destiny: travel_cost
+            for destiny, travel_cost in routing_table.items()
+            if destiny != neighbor  # Exclui rotas aprendidas do vizinho
+        }
+
+        # Cria a mensagem de atualização com a tabela filtrada
         message = {
             "type": "update",
             "source": address,
-            "destination": IP,
-            "distances": routing_table
+            "destination": neighbor,
+            "distances": filtered_table,
         }
-        
-        # Codifica a mensagem em JSON e a transforma em bytes
+
+        # Codifica a mensagem em JSON e transforma em bytes
         encoded_message = json.dumps(message).encode('utf-8')
-        
+
         # Envia a mensagem para o vizinho especificado
-        sock.sendto(encoded_message, (IP, port))
+        sock.sendto(encoded_message, (neighbor, port))
 
 # Função para receber mensagens de outros roteadores
 def RECEIVE_UPDATE_MESSAGE(sock, routing_table, address):
-    """
-    Recebe mensagens enviadas por roteadores vizinhos e atualiza a tabela de roteamento.
-    - sock: Socket para receber mensagens.
-    - routing_table: Tabela de roteamento atual.
-    - address: Endereço IP do roteador.
-    """
+
     # Recebe dados do socket (máximo de 4096 bytes) e o endereço do remetente
     info, sender = sock.recvfrom(4096)
     
@@ -103,16 +86,13 @@ def RECEIVE_UPDATE_MESSAGE(sock, routing_table, address):
 
 # Função principal do programa
 def main():
-    """
-    Função principal que inicializa o programa.
-    Recebe argumentos da linha de comando e configura o roteador.
-    """
+    
     # Argumentos da linha de comando
     address = sys.argv[1]  # Endereço IP do roteador
-    period = sys.argv[2]   # Período de envio de atualizações
+    period = int(sys.argv[2])  # Período de envio de atualizações
     startup = sys.argv[3]  # Tipo de inicialização ('add' ou outro)
     IP = sys.argv[4]       # Endereço IP do destino inicial
-    weight = sys.argv[5]   # Peso associado ao destino inicial
+    weight = int(sys.argv[5])   # Peso associado ao destino inicial
     
     # Porta padrão para comunicação
     port = 55151
@@ -121,7 +101,14 @@ def main():
     routing_table = {}
     
     # Cria o socket UDP
-    sockets = create_sockets(address, port)
+    sock = create_sockets(address, port)
+    
+    while True:
+        RECEIVE_UPDATE_MESSAGE(sock, routing_table, address);
+        if routing_table:
+            SEND_UPDATE_MESSAGE(sock, port, routing_table, address);
+            time.sleep(period);
+        
 
     # Executa ações específicas com base no tipo de inicialização
     if startup == 'add':
