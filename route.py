@@ -25,6 +25,32 @@ def DEL(routing_table, IP):
     else:
         print(f"Rota para {IP} não encontrada na tabela de roteamento.")
 
+# Função para enviar uma mensagem que traça uma rota até um IP (retorna até o remetente)
+def TRACE(routing_table, IP, my_address):
+    message = {
+                "type": "trace",
+                "source": my_address,
+                "destination": IP,
+                "routers": [my_address],
+                }
+    #Falta reenviar para seguir o caminho até o destino
+
+# A trace chegou até o destino, função que reenvia para a origem
+def send_trace_back(decoded_message, my_address):
+    message = {
+                "type": "data",
+                "source": my_address,
+                "destination": decoded_message.get("source"),
+                "payload": decoded_message,
+                }
+    #Falta enviar de volta para a origem e não sei se está tratado para os roteadores de caminho
+
+# Roteador de caminho, deve reenviar a trace seguindo até o destinatário
+def resend_trace(message, my_address):
+    destination = message.get("destination")
+    message.get("routers").append(my_address)
+    #Agora deve enviar message para o próximo roteador, não sei fazer isso ainda kkkkk
+
 # Função para enviar mensagens de atualização para os vizinhos com Split Horizon
 def SEND_UPDATE_MESSAGE(sock, port, routing_table, address):
     while True:
@@ -47,7 +73,7 @@ def SEND_UPDATE_MESSAGE(sock, port, routing_table, address):
         time.sleep(period)  # Aguarda o período especificado
 
 # Função para receber mensagens de outros roteadores
-def RECEIVE_UPDATE_MESSAGE(sock, routing_table, address):
+def RECEIVE_UPDATE_MESSAGE(sock, routing_table, my_address):
     while True:
         try:
             info, sender = sock.recvfrom(4096)
@@ -64,6 +90,13 @@ def RECEIVE_UPDATE_MESSAGE(sock, routing_table, address):
                             if destiny not in routing_table or routing_table[destiny] > cost:
                                 routing_table[destiny] = cost
                                 print(f"Tabela de roteamento atualizada: {routing_table}")
+            elif decoded_message.get("type") == "trace":
+                if(decoded_message.get("destination")==my_address):
+                    #Eu sou o destinatário, devo reenviar o trace à origem como payload de um json "data"
+                    send_trace_back(decoded_message)
+                else:
+                    #Sou um roteador de caminho, devo enviar a trace para o próximo
+                    resend_trace(decoded_message, my_address)
         except socket.timeout:
             continue  # Ignora timeouts
 
@@ -83,7 +116,7 @@ def main():
     #while routing_table:
     threading.Thread(target=RECEIVE_UPDATE_MESSAGE, args=(sock, routing_table, address), daemon=True).start()
 
-        # Inicia a thread para enviar atualizações periodicamente
+    # Inicia a thread para enviar atualizações periodicamente
     threading.Thread(target=SEND_UPDATE_MESSAGE, args=(sock, port, routing_table, address), daemon=True).start()
 
     # Loop principal para interação com o usuário
@@ -97,6 +130,10 @@ def main():
             IP = command.split()[1]
             with routing_table_lock:
                 DEL(routing_table, IP)
+        elif command.startswith("trace"):
+            IP = command.split()[1]
+            with routing_table_lock:
+                TRACE(routing_table, IP, address)
 
 # Executa a função principal quando o script é iniciado
 if __name__ == '__main__':
