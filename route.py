@@ -54,14 +54,16 @@ def resend_trace(message, my_address):
 # Função para enviar mensagens de atualização para os vizinhos com Split Horizon
 def SEND_UPDATE_MESSAGE(sock, port, routing_table, address):
     while True:
-        #print("Enviando atualizações...")
         with routing_table_lock:
             for neighbor, weight in routing_table.items():
+                # Cria uma tabela filtrada (Split Horizon)
                 filtered_table = {
-                    destiny: travel_cost
-                    for destiny, travel_cost in routing_table.items()
-                    if destiny != neighbor
+                    destination: cost + weight  # Adiciona o custo do link ao vizinho
+                    for destination, cost in routing_table.items()
+                    if destination != neighbor
                 }
+
+                # Monta a mensagem de update
                 message = {
                     "type": "update",
                     "source": address,
@@ -72,7 +74,7 @@ def SEND_UPDATE_MESSAGE(sock, port, routing_table, address):
                 sock.sendto(encoded_message, (neighbor, port))
         time.sleep(period)  # Aguarda o período especificado
 
-# Função para receber mensagens de outros roteadores
+# Função para receber mensagens de atualização e atualizar a tabela de roteamento
 def RECEIVE_UPDATE_MESSAGE(sock, routing_table, my_address):
     while True:
         try:
@@ -86,19 +88,19 @@ def RECEIVE_UPDATE_MESSAGE(sock, routing_table, my_address):
 
                 if source and distances:
                     with routing_table_lock:
-                        for destiny, cost in distances.items():
-                            if destiny not in routing_table or routing_table[destiny] > cost:
-                                routing_table[destiny] = cost
+                        for destination, received_cost in distances.items():
+                            # Soma o peso do link para o vizinho (source)
+                            link_cost = routing_table.get(source, float('inf'))
+                            total_cost = received_cost + link_cost
+
+                            # Atualiza apenas se for mais barato ou a rota não existir
+                            if destination not in routing_table or routing_table[destination] > total_cost:
+                                routing_table[destination] = total_cost
                                 print(f"Tabela de roteamento atualizada: {routing_table}")
-            elif decoded_message.get("type") == "trace":
-                if(decoded_message.get("destination")==my_address):
-                    #Eu sou o destinatário, devo reenviar o trace à origem como payload de um json "data"
-                    send_trace_back(decoded_message)
-                else:
-                    #Sou um roteador de caminho, devo enviar a trace para o próximo
-                    resend_trace(decoded_message, my_address)
+
         except socket.timeout:
             continue  # Ignora timeouts
+
 
 # Função principal do programa
 def main():
