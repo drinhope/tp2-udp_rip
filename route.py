@@ -1,127 +1,207 @@
-import socket  # Biblioteca para criar sockets
-import sys     # Biblioteca para lidar com argumentos da linha de comando
-import json    # Biblioteca para trabalhar com dados em formato JSON
-import time    # Biblioteca para trabalhar com tempo
-import threading  # Biblioteca para usar threads
+import socket
+import sys
+import json
+import time
+import threading
 
-# Constante que define o tempo limite para operações de socket
-TIMEOUT = 10
+TIMEOUT = 50
+neighbors = set()
+neighbor_timers = {}
 
 # Função para criar e configurar o socket UDP
 def create_sockets(address, port):
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)  # Criação do socket UDP
-    sock.settimeout(TIMEOUT)  # Define o tempo limite para operações de leitura
-    sock.bind((address, port))  # Vincula o socket ao endereço e porta especificados
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(2)
+    sock.bind((address, port))
     return sock
+
+def ROUTES_FUSION(go_to, destination, weight):
+    if destination == address:
+        return  # Ignora tentativas de atualizar a métrica para o próprio roteador
+
+    with routing_table_lock:
+
+        # Checa se a rota para o destino já existe
+        if destination in routing_table:
+            route = routing_table[destination]
+
+            # Atualiza se o custo for menor
+            if weight < route['weight']:
+                route['go_to'] = go_to
+                route['weight'] = weight
+            
+        else:
+            # Insere uma nova rota
+            routing_table[destination] = {
+                'go_to': go_to,
+                'weight': weight
+            }
+
+        # Garante que o próximo salto esteja registrado na tabela
+        if go_to not in routing_table:
+            routing_table[go_to] = {'go_to': go_to, 'weight': weight}
+
+    # Exibe o estado atualizado da tabela de roteamento
+
 
 # Função para adicionar uma rota à tabela de roteamento
 def ADD(routing_table, IP, weight):
-    routing_table[IP] = weight  # Adiciona ou atualiza a rota com o peso associado
+    neighbors.add(IP)
+    routing_table[IP] = {'go_to': IP, 'weight': weight}
 
 # Função para remover uma rota da tabela de roteamento
 def DEL(routing_table, IP):
+    #with routing_table_lock:
+        neighbors.discard(IP)
+        if IP in routing_table:
+            del routing_table[IP]
+        
+        # Remove rotas aprendidas através do vizinho
+        to_remove = [dest for dest, route in routing_table.items() if route["go_to"] == IP]
+        for dest in to_remove:
+            del routing_table[dest]
+
+
+def TRACE(sock, routing_table, IP, address):
+    message = {
+        "type": "trace",
+        "source": address,
+        "destination": IP,
+        "routers": [address]  # Inicia a lista com o roteador atual
+        }
+    
     if IP in routing_table:
-        del routing_table[IP]  # Remove a rota do dicionário
+        go_to = routing_table[IP]["go_to"]
+        encoded_message = json.dumps(message).encode('utf-8')
+        sock.sendto(encoded_message, (go_to, port))
+            
+def RECEIVE_TRACE(sock, source_IP, message):
+    if address in message["routers"]:
+        return
+    
+    message["routers"].append(address)
+    
+    if message["destination"] == address:
+        trace_response = {
+            "type": "data",
+            "source": address,
+            "destination": message["source"],
+            "payload": json.dumps(message)
+            }
+        encoded_trace_response = json.dumps(trace_response).encode('utf-8')
+        sock.sendto(encoded_trace_response, (message["source"], port))
     else:
-        print(f"Rota para {IP} não encontrada na tabela de roteamento.")
-
-# Função para enviar uma mensagem que traça uma rota até um IP (retorna até o remetente)
-def TRACE(routing_table, IP, my_address):
-    message = {
-                "type": "trace",
-                "source": my_address,
-                "destination": IP,
-                "routers": [my_address],
-                }
-    #Falta reenviar para seguir o caminho até o destino
-
-# A trace chegou até o destino, função que reenvia para a origem
-def send_trace_back(decoded_message, my_address):
-    message = {
-                "type": "data",
-                "source": my_address,
-                "destination": decoded_message.get("source"),
-                "payload": decoded_message,
-                }
-    #Falta enviar de volta para a origem e não sei se está tratado para os roteadores de caminho
-
-# Roteador de caminho, deve reenviar a trace seguindo até o destinatário
-def resend_trace(message, my_address):
-    destination = message.get("destination")
-    message.get("routers").append(my_address)
-    #Agora deve enviar message para o próximo roteador, não sei fazer isso ainda kkkkk
-
-# Função para enviar mensagens de atualização para os vizinhos com Split Horizon
-def SEND_UPDATE_MESSAGE(sock, port, routing_table, address):
-    while True:
         with routing_table_lock:
-            for neighbor, weight in routing_table.items():
-                # Cria uma tabela filtrada (Split Horizon)
-                filtered_table = {
-                    destination: cost + weight  # Adiciona o custo do link ao vizinho
-                    for destination, cost in routing_table.items()
-                    if destination != neighbor
-                }
-
-                # Monta a mensagem de update
-                message = {
-                    "type": "update",
-                    "source": address,
-                    "destination": neighbor,
-                    "distances": filtered_table,
-                }
+            if message["destination"] in routing_table:
+                go_to = routing_table[message["destination"]]["go_to"]
                 encoded_message = json.dumps(message).encode('utf-8')
-                sock.sendto(encoded_message, (neighbor, port))
-        time.sleep(period)  # Aguarda o período especificado
-
-# Função para receber mensagens de atualização e atualizar a tabela de roteamento
-def RECEIVE_UPDATE_MESSAGE(sock, routing_table, my_address):
+                sock.sendto(encoded_message, (go_to, port))
+                
+# Função para receber mensagens
+def RECEIVE_MESSAGE(sock, routing_table, address):
+    global neighbors
     while True:
         try:
             info, sender = sock.recvfrom(4096)
             decoded_message = json.loads(info.decode('utf-8'))
-            print(f"Mensagem recebida: {decoded_message}")
+            source_IP = decoded_message["source"]
 
+            # messagens de update
             if decoded_message.get("type") == "update":
-                source = decoded_message.get("source")
-                distances = decoded_message.get("distances")
-
-                if source and distances:
+                with routing_table_lock:
+                    neighbor_timers[source_IP] = time.time()
+                distances = decoded_message.get('distances', {})
+                print(f'{distances}')
+                for destination, add_weight in distances.items(): #distance.items par chave fechadura com o ip do roteador e a distancia até ele
+                    # Corrige o cálculo da distância total
+                    if destination == address:
+                        continue  # Não altera a distância do próprio roteador
+                    ROUTES_FUSION(source_IP, destination, add_weight)
+            
+            elif decoded_message.get("type") == "data":
+                if decoded_message.get("destination") == address:
+                    print("Payload:", json.dumps(decoded_message['payload'], indent=4))
+                else:
                     with routing_table_lock:
-                        for destination, received_cost in distances.items():
-                            # Soma o peso do link para o vizinho (source)
-                            link_cost = routing_table.get(source, float('inf'))
-                            total_cost = received_cost + link_cost
-
-                            # Atualiza apenas se for mais barato ou a rota não existir
-                            if destination not in routing_table or routing_table[destination] > total_cost:
-                                routing_table[destination] = total_cost
-                                print(f"Tabela de roteamento atualizada: {routing_table}")
+                        if decoded_message.get("destination") in routing_table:
+                            encoded_message = json.dumps(decoded_message).encode('utf-8')
+                            sock.sendto(encoded_message, (routing_table[decoded_message['destination']]['go_to'], port))
+                        else:
+                            continue 
+                        
+            elif decoded_message.get("type") == "trace":
+                RECEIVE_TRACE(sock, source_IP, decoded_message)
 
         except socket.timeout:
-            continue  # Ignora timeouts
+            continue
 
+# Função para enviar mensagens de atualização
+def SEND_UPDATE_MESSAGE(sock, port):
+    
+    while True:
+        time.sleep(period)
+        with routing_table_lock:
+            for neighbor in neighbors:
+                if neighbor in routing_table:
+                    add_weight = routing_table[neighbor]['weight']
+                distances = {}
+                
+                for destination, path in routing_table.items():
+                    if path['go_to'] == neighbor:
+                        # Evita enviar rotas aprendidas de um roteador de volta para ele mesmo
+                        continue
+                    elif destination == neighbor:
+                        continue
+                    elif destination == address:  # Se o destino for o IP da origem, soma a distância extra
+                        distances[destination] = path['weight'] + add_weight
+                    elif destination in neighbors:
+                        distances[destination] = path['weight']+ add_weight
+                    elif destination not in neighbors:
+                        distances[destination] = path['weight']
+                
+                message = {
+                    "type": "update",
+                    "source": address,
+                    "destination": neighbor,
+                    "distances": distances
+                }
+                encoded_message = json.dumps(message).encode('utf-8')
+                sock.sendto(encoded_message, (neighbor, port))
+                
+def MONITOR_NEIGHBORS(sock, routing_table, period):
+    global neighbors, neighbor_timers
+    timeout_limit = 4 * period
+    while True:
+        time.sleep(period)
+        current_time = time.time()  # Atualiza o tempo atual
+        with routing_table_lock:
+            for neighbor in list(neighbor_timers):  # Use list() para evitar problemas ao modificar o set durante a iteração
+                last_update_time = neighbor_timers.get(neighbor, 0)
+                delta_time = (current_time - last_update_time)
+                if delta_time > timeout_limit:
+                    DEL(routing_table, neighbor)
+                    del neighbor_timers[neighbor]
 
-# Função principal do programa
+# Função principal
 def main():
-    global period, routing_table_lock
+    global period, address, routing_table, routing_table_lock, port
 
-    address = sys.argv[1]  # Endereço IP do roteador
-    period = int(sys.argv[2])  # Período de envio de atualizações
-    port = 55151  # Porta padrão para comunicação
+    address = sys.argv[1]
+    period = int(sys.argv[2])
+    port = 55151
 
-    sock = create_sockets(address, port)  # Cria o socket UDP
-    routing_table = {}  # Inicializa a tabela de roteamento como um dicionário vazio
-    routing_table_lock = threading.Lock()  # Trava para sincronização de acesso à tabela
+    sock = create_sockets(address, port)
+    
+    routing_table = {}
+    routing_table_lock = threading.Lock()
+    
+    routing_table[address] = {'go_to': address, 'weight': 0}
+    print(f'{routing_table}')
+    threading.Thread(target=RECEIVE_MESSAGE, args=(sock, routing_table, address), daemon=True).start()
+    threading.Thread(target=SEND_UPDATE_MESSAGE, args=(sock, port), daemon=True).start()
+    threading.Thread(target=MONITOR_NEIGHBORS, args=(sock, routing_table, period), daemon=True).start()
 
-    # Inicia a thread para receber mensagens
-    #while routing_table:
-    threading.Thread(target=RECEIVE_UPDATE_MESSAGE, args=(sock, routing_table, address), daemon=True).start()
 
-    # Inicia a thread para enviar atualizações periodicamente
-    threading.Thread(target=SEND_UPDATE_MESSAGE, args=(sock, port, routing_table, address), daemon=True).start()
-
-    # Loop principal para interação com o usuário
     while True:
         command = input()
         if command.startswith("add"):
@@ -135,8 +215,10 @@ def main():
         elif command.startswith("trace"):
             IP = command.split()[1]
             with routing_table_lock:
-                TRACE(routing_table, IP, address)
+                TRACE(sock, routing_table, IP, address)
+        elif command.startswith("quit"):
+            sock.close()  # Fecha o socket
+            sys.exit(0)   # Encerra o programa de forma limpa
 
-# Executa a função principal quando o script é iniciado
 if __name__ == '__main__':
     main()
